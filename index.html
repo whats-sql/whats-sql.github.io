@@ -178,6 +178,11 @@
 				function closeChat() {
 					detachChatListeners();
 					
+					// Hide add member buttons
+					for (let contact of contacts)
+						contact.addMemberButton.hide();
+					
+					// Hide chat
 					$("#chat").hide();
 				}
 				function removeChatMember(chatId, memberId) {
