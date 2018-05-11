@@ -171,17 +171,16 @@
 		<script>
 			$(document).ready(function () {
 				function detachAppListeners() {
-					if (typeof appListeners === "undefined")
-						appListeners = [];
-					
 					for (let appListener of appListeners)
 						detach(appListener.path, appListener.eventType, appListener.callback);
 					appListeners.length = 0;
 				}
+				function closeApp() {
+					detachAppListeners();
+					
+					closeChat();
+				}
 				function detachChatListeners() {
-					if (typeof chatListeners === "undefined")
-						chatListeners = [];
-				
 					for (let chatListener of chatListeners)
 						detach(chatListener.path, chatListener.eventType, chatListener.callback);
 					chatListeners.length = 0;
@@ -252,6 +251,8 @@
 					firebase.auth().signInWithPopup(provider);
 				});
 				$("#logout-button").click(function () {
+					closeChat();
+					
 					firebase.auth().signOut();
 				});
 				
@@ -336,10 +337,10 @@
 					});
 				}
 				
+				appListeners = [];
+				chatListeners = [];
+				
 				function onLogin(user) {
-					// Detach 
-					detachAppListeners();
-					
 					// Listen username
    					appListeners.push(listen("user_names/" + user.uid, "value", function (dataSnapshot) {
    					   $("#username").text(dataSnapshot.val());
@@ -411,9 +412,6 @@
 					
 					function selectChat() {
 						$("#chat").show();
-						
-						// Detach listeners
-						detachChatListeners();
 						
 						// Listen membership
 						chatListeners.push(listen("chat_members/" + chatId + "/" + user.uid, "value", function (membershipSnapshot) {
