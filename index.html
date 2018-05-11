@@ -179,8 +179,8 @@
 					detachChatListeners();
 					
 					// Hide add member buttons
-					for (let contact of contacts)
-						contact.addMemberButton.hide();
+					for (let contactId in contacts)
+						contacts[contactId].addMemberButton.hide();
 					
 					// Hide chat
 					$("#chat").hide();
