@@ -343,7 +343,7 @@
 					$("#email").text(user.email);
 					
 					// Listen contacts
-					let contacts = {};
+					contacts = {};
 					$("#contacts").html("");
 					appListeners.push(listen("user_contacts/" + user.uid, "child_added", function (contactSnapshot) {
 						contacts[contactSnapshot.key] = {};
