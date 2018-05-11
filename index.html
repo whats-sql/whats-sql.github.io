@@ -170,16 +170,6 @@
 		
 		<script>
 			$(document).ready(function () {
-				function detachAppListeners() {
-					for (let appListener of appListeners)
-						detach(appListener.path, appListener.eventType, appListener.callback);
-					appListeners.length = 0;
-				}
-				function closeApp() {
-					detachAppListeners();
-					
-					closeChat();
-				}
 				function detachChatListeners() {
 					for (let chatListener of chatListeners)
 						detach(chatListener.path, chatListener.eventType, chatListener.callback);
@@ -251,8 +241,6 @@
 					firebase.auth().signInWithPopup(provider);
 				});
 				$("#logout-button").click(function () {
-					closeChat();
-					
 					firebase.auth().signOut();
 				});
 				
@@ -513,14 +501,24 @@
 					}
 				}
 				
+				function onLogout() {
+					// Close chat
+					closeChat();
+				
+					// Detach app listeners
+					for (let appListener of appListeners)
+						detach(appListener.path, appListener.eventType, appListener.callback);
+					appListeners.length = 0;
+				}
+				
 				firebase.auth().onAuthStateChanged(function (user) {
 					$("#login-screen").toggle(user === null);
 					$("#chat-screen").toggle(user !== null);
 					
-					if (user) {
-						$("#chat").hide();
+					if (user)
 						verifyAccount(user);
-					}
+					else
+						onLogout();
 				});
 			});
 		</script>
