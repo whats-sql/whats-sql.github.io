@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html>
 	<head>
@@ -43,8 +44,8 @@
 			function write(path, value, onComplete) {
 				return firebase.database().ref(path).set(value, onComplete);
 			}
-			function detach(path, eventType, callback) {
-				return firebase.database().ref(path).off(eventType, callback);
+			function detach(listener) {
+				return firebase.database().ref(listener.path).off(listener.eventType, listener.callback);
 			}
 			function remove(path) {
 				return firebase.database().ref(path).remove();
@@ -170,21 +171,49 @@
 		
 		<script>
 			$(document).ready(function () {
-				function detachChatListeners() {
-					for (let chatListener of chatListeners)
-						detach(chatListener.path, chatListener.eventType, chatListener.callback);
-					chatListeners.length = 0;
-				}
+                let userListeners = [];
+                let userContacts = {};
+                let userChats = {};
+                
+                let chatListeners = [];
+                let chatMembers = {};
+                
 				function closeChat() {
-					detachChatListeners();
-					
-					// Hide add member buttons
-					for (let contactId in contacts)
-						contacts[contactId].addMemberButton.hide();
-					
-					// Hide chat
-					$("#chat").hide();
+                    // Clear add member buttons
+                    for (let contactId in userContacts) {
+                        // Hide button
+                        userContacts[contactId].addMemberButton.hide();
+                        
+                        // Detach listener
+                        if (userContacts[contactId].memberListener)
+                            detach(userContacts[contactId].memberListener);
+                    }
+                        
+                    // Clear chat members
+                    for (let memberId in chatMembers)
+                        for (let listener of chatMembers[memberId].listeners)
+                            detach(listener);
+					chatMembers = {};
+                    $("#members").empty();
+                    
+                    // Clear chat
+					for (let listener of chatListeners)
+						detach(listener);
+					chatListeners.length = 0;
+                    $("#chat").hide();
 				}
+                function setupAddMemberButton(contactId) {
+                    let contact = userContacts[contactId];
+                    
+                    // Setup button listener
+                    contact.memberListener = listenElemDisplay("chat_members/" + chatId + "/" + contactId, contact.addMemberButton, true);
+                    
+                    // Setup button event
+                    userContacts[contactId].addMemberButton.off().on("click", function () {
+                        write("user_chats/" + contactId + "/" + chatId, true);
+                        write("chat_members/" + chatId + "/" + contactId, true);
+                    });
+                }
 				function removeChatMember(chatId, memberId) {
 					remove("user_chats/" + memberId + "/" + chatId);
 					
@@ -235,6 +264,253 @@
 					chatListeners.push({path: "chat_messages/" + chatId, eventType: "child_added", callback: messageCallback});
 				}
 				
+				function verifyAccount(user) {
+					read("user_names/" + user.uid, "value", function (userSnapshot) {
+						if (userSnapshot.exists()) {
+							// Other logins
+							onLogin(user);
+						} else {
+							// First login
+							Promise.all([
+								write("user_names/" + user.uid, user.displayName),
+								write("user_emails/" + user.uid, user.email)
+							]).then(function () {
+								onLogin(user);
+							});
+						}
+					});
+				}
+				
+				function onLogin(user) {
+					// Listen username
+   					userListeners.push(listen("user_names/" + user.uid, "value", function (dataSnapshot) {
+   					   $("#username").text(dataSnapshot.val());
+				   	}));
+					
+					// Read e-mail
+					$("#email").text(user.email);
+					
+					// Listen contacts
+					userContacts = {};
+					$("#contacts").empty();
+					userListeners.push(listen("user_contacts/" + user.uid, "child_added", function (contactSnapshot) {
+						let contact = userContacts[contactSnapshot.key] = {};
+					
+                        // Contact element
+						contact.elem = $("<div></div>").appendTo("#contacts");
+						
+						// Contact name
+						let contactNameElem = $("<span></span>").appendTo(contact.elem);
+						contact.nameListener = listenElemText("user_names/" + contactSnapshot.key, contactNameElem);
+						
+						contact.elem.append(" ");
+						
+						// Add member button
+						contact.addMemberButton = $("<input type='button'/>").appendTo(contact.elem);
+						contact.addMemberButton.val("Add to chat").hide();
+                        if ($("#chat").is(":visible"))
+                            setupAddMemberButton(contactSnapshot.key);
+						
+						contact.elem.append(" ");
+						
+						// Remove button
+						let removeButton = $("<input type='button' value='Remove contact'/>").appendTo(contact.elem);
+						removeButton.on("click", function () {
+							remove("user_contacts/" + user.uid + "/" + contactSnapshot.key);
+						});
+					}));
+					userListeners.push(listen("user_contacts/" + user.uid, "child_removed", function (contactSnapshot) {
+						let contact = userContacts[contactSnapshot.key];
+                        
+                        // Detach member listener
+                        if (contact.memberListener)
+                            detach(contact.memberListener);
+                        
+                        // Detach name listener
+                        detach(contact.nameListener);
+                        
+                        // Remove element
+						contact.elem.remove();
+                        
+                        // Delete object
+						delete userContacts[contactSnapshot.key];
+					}));
+					
+					// Listen chats
+					userChats = {};
+					$("#chats").empty();
+					userListeners.push(listen("user_chats/" + user.uid, "child_added", function (chatSnapshot) {
+						let chat = userChats[chatSnapshot.key] = {listeners: []};
+                        
+                        // Chat element
+						chat.elem = $("<div></div>").appendTo("#chats");
+						
+						// Chat title
+						let chatTitleElem = $("<span class='chat-title'></span>").appendTo(chat.elem);
+						chat.listeners.push(listenElemText("chat_titles/" + chatSnapshot.key, chatTitleElem));
+						chatTitleElem.on("click", function () {
+							chatId = chatSnapshot.key;
+							selectChat();
+						});
+						
+						chat.elem.append(" ");
+						
+						// Remove button
+						let removeButton = $("<input type='button' value='Remove chat'/>").appendTo(chat.elem);
+						removeButton.on("click", function () {
+							removeChatMember(chatSnapshot.key, user.uid);
+						});
+					}));
+					userListeners.push(listen("user_chats/" + user.uid, "child_removed", function (chatSnapshot) {
+						let chat = userChats[chatSnapshot.key];
+                        
+                        // Detach listeners
+                        for (let listener of chat.listeners)
+                            detach(listener);
+                        
+                        // Remove element
+						chat.elem.remove();
+                        
+                        // Delete object
+						delete userChats[chatSnapshot.key];
+					}));
+					
+					function selectChat() {
+						// Close chat
+						closeChat();
+						
+						// Show chat
+						$("#chat").show();
+						
+						// Listen membership
+						chatListeners.push(listen("chat_members/" + chatId + "/" + user.uid, "value", function (membershipSnapshot) {
+							if (!membershipSnapshot.exists())
+								closeChat();
+						}));
+						
+						// Listen title
+						chatListeners.push(listenElemText("chat_titles/" + chatId, $("#chat-title")));
+						
+						// Listen admin
+						chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, $("#change-title")));
+						chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, $("#add-member")));
+						
+						// Listen contacts
+						for (let contactId in userContacts)
+                            setupAddMemberButton(contactId);
+						
+						// Listen members
+						chatMembers = {};
+						$("#members").empty();
+						chatListeners.push(listen("chat_members/" + chatId, "child_added", function (memberSnapshot) {
+                            let member = chatMembers[memberSnapshot.key] = {listeners: []};
+                            
+                            // Member element
+							member.elem = $("<div></div>").appendTo("#members");
+							
+							// Member name
+							let memberNameElem = $("<scan></scan>").appendTo(member.elem);
+							member.listeners.push(listenElemText("user_names/" + memberSnapshot.key, memberNameElem));
+							
+							member.elem.append(" ");
+							
+							// Add contact button
+							if (memberSnapshot.key !== user.uid) {
+								let addContactButton = $("<input type='button' value='Add contact'/>").appendTo(member.elem);
+								member.listeners.push(listenElemDisplay("user_contacts/" + user.uid + "/" + memberSnapshot.key, addContactButton, true));
+								addContactButton.on("click", function () {
+									write("user_contacts/" + user.uid + "/" + memberSnapshot.key, true);
+								});
+							}
+							
+							member.elem.append(" ");
+							
+							// Promote button
+							let promoteButton = $("<input type='button' value='Promote'/>").appendTo(member.elem);
+							member.listeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, promoteButton));
+							member.listeners.push(listen("chat_admins/" + chatId + "/" + memberSnapshot.key, "value", function (adminSnapshot) {
+								promoteButton.val(adminSnapshot.exists() ? "Demote" : "Promote");
+							}));
+							promoteButton.on("click", function () {
+								let promote = $(this).val() === "Promote";
+								if (promote)
+									write("chat_admins/" + chatId + "/" + memberSnapshot.key, true);
+								else
+									remove("chat_admins/" + chatId + "/" + memberSnapshot.key);
+							});
+							
+							member.elem.append(" ");
+							
+							// Remove button
+							let removeButton = $("<input type='button' value='Remove member'/>").appendTo(member.elem);
+							chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, removeButton));
+							removeButton.on("click", function () {
+								removeChatMember(chatId, memberSnapshot.key);
+							});
+						}));
+						chatListeners.push(listen("chat_members/" + chatId, "child_removed", function (memberSnapshot) {
+    						let member = chatMembers[memberSnapshot.key];
+                            
+                            // Detach listeners
+                            for (let listener of member.listeners)
+                                detach(listener);
+                                
+                            // Remove element
+							member.elem.remove();
+                            
+                            // Delete object
+							delete chatMembers[memberSnapshot.key];
+						}));
+						
+						// Listen messages
+						$("#messages").empty();4
+						read(".info/serverTimeOffset", "value", function (offsetSnapshot) {
+							endTimestamp = new Date().getTime() + offsetSnapshot.val();
+							
+							// Old messages
+							loadMoreMessages(true);
+							
+							// New messages
+							let messageCallback = function (messageSnapshot) {
+								let message = messageSnapshot.val();
+								
+								let messageElem = $("<div></div>").appendTo("#messages");
+								chatListeners.push(listen("user_names/" + message.author, "value", function (authorSnapshot) {
+									messageElem.text(message.timestamp + " - " + authorSnapshot.val() + ": " + message.content);
+								}));
+								
+								scrollToBottom();
+							};
+							firebase.database().ref("chat_messages/" + chatId).orderByChild("timestamp").startAt(endTimestamp).on("child_added", messageCallback);
+							chatListeners.push({path: "chat_messages/" + chatId, eventType: "child_added", callback: messageCallback});
+						});
+					}
+				}
+				
+				function onLogout() {
+					// Close chat
+					closeChat();
+                        
+                    // Clear user chats
+                    for (let chatId in userChats)
+                        for (let listener of userChats[chatId].listeners)
+                            detach(listener);
+					userChats = {};
+                    $("#chats").empty();
+                        
+                    // Clear user contacts
+                    for (let chatId in userContacts)
+                        for (let listener of userContacts[chatId].listeners)
+                            detach(listener);
+					userContacts = {};
+                    $("#contacts").empty();
+				
+					// Detach user listeners
+					for (let listener of userListeners)
+						detach(listener);
+					userListeners.length = 0;
+				}
+				
 				// Login screen
 				$("#google-button").click(function () {
 					let provider = new firebase.auth.GoogleAuthProvider();
@@ -247,6 +523,16 @@
 				});
 				$("#logout-button").click(function () {
 					firebase.auth().signOut();
+				});
+				
+				firebase.auth().onAuthStateChanged(function (user) {
+					$("#login-screen").toggle(user === null);
+					$("#chat-screen").toggle(user !== null);
+					
+					if (user)
+						verifyAccount(user);
+					else
+						onLogout();
 				});
 				
 				// Chat screen
@@ -311,223 +597,6 @@
 					});
 					
 					$("#message").val("");
-				});
-				
-				function verifyAccount(user) {
-					read("user_names/" + user.uid, "value", function (userSnapshot) {
-						if (userSnapshot.exists()) {
-							// Other logins
-							onLogin(user);
-						} else {
-							// First login
-							Promise.all([
-								write("user_names/" + user.uid, user.displayName),
-								write("user_emails/" + user.uid, user.email)
-							]).then(function () {
-								onLogin(user);
-							});
-						}
-					});
-				}
-				
-				appListeners = [];
-				chatListeners = [];
-				
-				function onLogin(user) {
-					// Listen username
-   					appListeners.push(listen("user_names/" + user.uid, "value", function (dataSnapshot) {
-   					   $("#username").text(dataSnapshot.val());
-				   	}));
-					
-					// Read e-mail
-					$("#email").text(user.email);
-					
-					// Listen contacts
-					contacts = {};
-					$("#contacts").html("");
-					appListeners.push(listen("user_contacts/" + user.uid, "child_added", function (contactSnapshot) {
-						contacts[contactSnapshot.key] = {};
-					
-						let contactElem = $("<div></div>").appendTo("#contacts");
-						contacts[contactSnapshot.key].elem = contactElem;
-						
-						// Contact name
-						let contactNameElem = $("<span></span>").appendTo(contactElem);
-						appListeners.push(listenElemText("user_names/" + contactSnapshot.key, contactNameElem));
-						
-						contactElem.append(" ");
-						
-						// Add member button
-						let addMemberButton = $("<input type='button'/>").appendTo(contactElem);
-						addMemberButton.val("Add to chat").hide();
-						contacts[contactSnapshot.key].addMemberButton = addMemberButton;
-						
-						contactElem.append(" ");
-						
-						// Remove button
-						let removeButton = $("<input type='button' value='Remove contact'/>").appendTo(contactElem);
-						removeButton.on("click", function () {
-							remove("user_contacts/" + user.uid + "/" + contactSnapshot.key);
-						});
-					}));
-					appListeners.push(listen("user_contacts/" + user.uid, "child_removed", function (contactSnapshot) {
-						contacts[contactSnapshot.key].elem.remove();
-						delete contacts[contactSnapshot.key].elem;
-					}));
-					
-					// Listen chats
-					let chatElems = {};
-					$("#chats").html("");
-					appListeners.push(listen("user_chats/" + user.uid, "child_added", function (chatSnapshot) {
-						let chatElem = $("<div></div>").appendTo("#chats");
-						chatElems[chatSnapshot.key] = chatElem;
-						
-						// Chat title
-						let chatTitleElem = $("<span class='chat-title'></span>").appendTo(chatElem);
-						appListeners.push(listenElemText("chat_titles/" + chatSnapshot.key, chatTitleElem));
-						chatTitleElem.on("click", function () {
-							chatId = chatSnapshot.key;
-							selectChat();
-						});
-						
-						chatElem.append(" ");
-						
-						// Remove button
-						let removeButton = $("<input type='button' value='Remove chat'/>").appendTo(chatElem);
-						removeButton.on("click", function () {
-							removeChatMember(chatSnapshot.key, user.uid);
-						});
-					}));
-					appListeners.push(listen("user_chats/" + user.uid, "child_removed", function (chatSnapshot) {
-						chatElems[chatSnapshot.key].remove();
-						delete chatElems[chatSnapshot.key];
-					}));
-					
-					function selectChat() {
-						// Close chat
-						closeChat();
-						
-						// Show chat
-						$("#chat").show();
-						
-						// Listen membership
-						chatListeners.push(listen("chat_members/" + chatId + "/" + user.uid, "value", function (membershipSnapshot) {
-							if (!membershipSnapshot.exists())
-								closeChat();
-						}));
-						
-						// Listen title
-						chatListeners.push(listenElemText("chat_titles/" + chatId, $("#chat-title")));
-						
-						// Listen admin
-						chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, $("#change-title")));
-						chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, $("#add-member")));
-						
-						// Listen contacts
-						for (let contactId in contacts) {
-							chatListeners.push(listenElemDisplay("chat_members/" + chatId + "/" + contactId, contacts[contactId].addMemberButton, true));
-							
-							contacts[contactId].addMemberButton.off().on("click", function () {
-								write("user_chats/" + contactId + "/" + chatId, true);
-								write("chat_members/" + chatId + "/" + contactId, true);
-							});
-						}
-						
-						// Listen members
-						let memberElems = {};
-						$("#members").html("");
-						chatListeners.push(listen("chat_members/" + chatId, "child_added", function (memberSnapshot) {
-							let memberElem = $("<div></div>").appendTo("#members");
-							memberElems[memberSnapshot.key] = memberElem;
-							
-							// Member name
-							let memberNameElem = $("<scan></scan>").appendTo(memberElem);
-							chatListeners.push(listenElemText("user_names/" + memberSnapshot.key, memberNameElem));
-							
-							memberElem.append(" ");
-							
-							// Add contact button
-							if (memberSnapshot.key !== user.uid) {
-								let addContactButton = $("<input type='button' value='Add contact'/>").appendTo(memberElem);
-								chatListeners.push(listenElemDisplay("user_contacts/" + user.uid + "/" + memberSnapshot.key, addContactButton, true));
-								addContactButton.on("click", function () {
-									write("user_contacts/" + user.uid + "/" + memberSnapshot.key, true);
-								});
-							}
-							
-							memberElem.append(" ");
-							
-							// Promote button
-							let promoteButton = $("<input type='button' value='Promote'/>").appendTo(memberElem);
-							chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, promoteButton));
-							chatListeners.push(listen("chat_admins/" + chatId + "/" + memberSnapshot.key, "value", function (adminSnapshot) {
-								promoteButton.val(adminSnapshot.exists() ? "Demote" : "Promote");
-							}));
-							promoteButton.on("click", function () {
-								let promote = $(this).val() === "Promote";
-								if (promote)
-									write("chat_admins/" + chatId + "/" + memberSnapshot.key, true);
-								else
-									remove("chat_admins/" + chatId + "/" + memberSnapshot.key);
-							});
-							
-							memberElem.append(" ");
-							
-							// Remove button
-							let removeButton = $("<input type='button' value='Remove member'/>").appendTo(memberElem);
-							chatListeners.push(listenElemDisplay("chat_admins/" + chatId + "/" + user.uid, removeButton));
-							removeButton.on("click", function () {
-								removeChatMember(chatId, memberSnapshot.key);
-							});
-						}));
-						chatListeners.push(listen("chat_members/" + chatId, "child_removed", function (memberSnapshot) {
-							memberElems[memberSnapshot.key].remove();
-							delete memberElems[memberSnapshot.key];
-						}));
-						
-						// Listen messages
-						$("#messages").html("");4
-						read(".info/serverTimeOffset", "value", function (offsetSnapshot) {
-							endTimestamp = new Date().getTime() + offsetSnapshot.val();
-							
-							// Old messages
-							loadMoreMessages(true);
-							
-							// New messages
-							let messageCallback = function (messageSnapshot) {
-								let message = messageSnapshot.val();
-								
-								let messageElem = $("<div></div>").appendTo("#messages");
-								chatListeners.push(listen("user_names/" + message.author, "value", function (authorSnapshot) {
-									messageElem.text(message.timestamp + " - " + authorSnapshot.val() + ": " + message.content);
-								}));
-								
-								scrollToBottom();
-							};
-							firebase.database().ref("chat_messages/" + chatId).orderByChild("timestamp").startAt(endTimestamp).on("child_added", messageCallback);
-							chatListeners.push({path: "chat_messages/" + chatId, eventType: "child_added", callback: messageCallback});
-						});
-					}
-				}
-				
-				function onLogout() {
-					// Close chat
-					closeChat();
-				
-					// Detach app listeners
-					for (let appListener of appListeners)
-						detach(appListener.path, appListener.eventType, appListener.callback);
-					appListeners.length = 0;
-				}
-				
-				firebase.auth().onAuthStateChanged(function (user) {
-					$("#login-screen").toggle(user === null);
-					$("#chat-screen").toggle(user !== null);
-					
-					if (user)
-						verifyAccount(user);
-					else
-						onLogout();
 				});
 			});
 		</script>
